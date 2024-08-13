@@ -91,3 +91,11 @@ output "secret_access_key_ssm_path" {
   value       = module.s3_user.secret_access_key_ssm_path
   description = "The SSM Path under which the S3 User's secret access key is stored"
 }
+
+output "lifecycle_configuration_rules_dradis" {
+  value = local.s3_dradis_backup_rules
+}
+
+output "lifecycle_configuration_rules_nextcloud" {
+  value = local.s3_nextcloud_backup_rules
+}
