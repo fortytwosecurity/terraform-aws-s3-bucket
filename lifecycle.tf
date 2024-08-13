@@ -1,50 +1,20 @@
 locals {
-  /*
-  # full_lifecycle_rule_schema is just for documentation, not actually used.
-  full_lifecycle_rule_schema = {
-    enabled = true # bool
-    id      = null # string, must be specified and unique
-
-    abort_incomplete_multipart_upload_days = null # number
-    filter_prefix_only                     = null # string See https://github.com/hashicorp/terraform-provider-aws/issues/23882
-    filter_and = {
-      object_size_greater_than = null # integer >= 0
-      object_size_less_than    = null # integer >= 1
-      prefix                   = null # string
-      tags                     = {}   # map(string)
-    }
-    expiration = {
-      date                         = null # string
-      days                         = null # integer > 0
-      expired_object_delete_marker = null # bool
-    }
-    noncurrent_version_expiration = {
-      newer_noncurrent_versions = null # integer > 0
-      noncurrent_days           = null # integer >= 0
-    }
-    transition = [{
-      date          = null # string
-      days          = null # integer > 0
-      storage_class = null # string/enum, one of GLACIER, STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING, DEEP_ARCHIVE, GLACIER_IR.
-    }]
-    noncurrent_version_transition = [{
-      newer_noncurrent_versions = null # integer >= 0
-      noncurrent_days           = null # integer >= 0
-      storage_class             = null # string/enum, one of GLACIER, STANDARD_IA, ONEZONE_IA, INTELLIGENT_TIERING, DEEP_ARCHIVE, GLACIER_IR.
-    }]
-  }
-  */
-
-  lifecycle_configuration_rules = var.lifecycle_configuration_rules == null ? [] : var.lifecycle_configuration_rules
-  # Normalize the input, filling in missing fields
-  normalized_lifecycle_configuration_rules = [for rule in local.lifecycle_configuration_rules : {
+  # Combine all lifecycle rules into a single list
+  combined_lifecycle_configuration_rules = flatten([
+    for rules in [
+      local.s3_dradis_backup_rules,
+      local.s3_nextcloud_backup_rules
+      # Add more lifecycle rules if needed
+    ] : rules
+  ])
+  
+  # Normalize the combined lifecycle rules
+  normalized_lifecycle_configuration_rules = [for rule in local.combined_lifecycle_configuration_rules : {
     enabled = rule.enabled
     id      = rule.id
 
-    abort_incomplete_multipart_upload_days = rule.abort_incomplete_multipart_upload_days # number
+    abort_incomplete_multipart_upload_days = rule.abort_incomplete_multipart_upload_days
 
-    # Due to https://github.com/hashicorp/terraform-provider-aws/issues/23882
-    # we have to treat having only the `prefix` set differently than having any other setting.
     filter_prefix_only = (try(rule.filter_and.object_size_greater_than, null) == null &&
       try(rule.filter_and.object_size_less_than, null) == null &&
       try(length(rule.filter_and.tags), 0) == 0 &&
@@ -58,7 +28,7 @@ locals {
       prefix                   = try(length(rule.filter_and.prefix), 0) == 0 ? null : rule.filter_and.prefix
       tags                     = try(length(rule.filter_and.tags), 0) == 0 ? {} : rule.filter_and.tags
     }
-    # We use "!= true" because it covers !null as well as !false, and allows the "null" option to be on the same line.
+
     expiration = (try(rule.expiration.date, null) == null &&
       try(rule.expiration.days, null) == null &&
       try(rule.expiration.expired_object_delete_marker, null) == null) ? null : {
@@ -157,23 +127,21 @@ locals {
 
 
 resource "aws_s3_bucket_lifecycle_configuration" "default" {
-  count  = local.enabled && length(local.lc_rules) > 0 ? 1 : 0
+  count  = local.enabled && length(local.normalized_lifecycle_configuration_rules) > 0 ? 1 : 0
   bucket = local.bucket_id
 
   dynamic "rule" {
-    for_each = local.lc_rules
+    for_each = local.normalized_lifecycle_configuration_rules
 
     content {
       id     = rule.value.id
       status = rule.value.enabled == true ? "Enabled" : "Disabled"
 
-      # Filter is always required due to https://github.com/hashicorp/terraform-provider-aws/issues/23299
       dynamic "filter" {
         for_each = rule.value.filter_prefix_only == null && rule.value.filter_and == null ? ["empty"] : []
         content {}
       }
 
-      # When only specifying `prefix`, do not use `and` due to https://github.com/hashicorp/terraform-provider-aws/issues/23882
       dynamic "filter" {
         for_each = rule.value.filter_prefix_only == null ? [] : ["prefix"]
         content {
@@ -181,7 +149,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "default" {
         }
       }
 
-      # When specifying more than 1 filter criterion, use `and`
       dynamic "filter" {
         for_each = rule.value.filter_and == null ? [] : ["and"]
         content {
@@ -245,4 +212,10 @@ resource "aws_s3_bucket_lifecycle_configuration" "default" {
     # versioning must be set before lifecycle configuration
     aws_s3_bucket_versioning.default
   ]
+}
+
+locals {
+  s3_dradis_backup_rules = local.s3_dradis_backup_rules
+  s3_nextcloud_backup_rules = local.s3_nextcloud_backup_rules
+  # Add more sets if needed
 }
